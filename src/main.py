@@ -28,8 +28,8 @@ from src.infrastructure.geoip.updater import maxmind_update_task
 from src.infrastructure.remnawave.client import create_remnawave_client
 from src.infrastructure.remnawave.raw_client import create_remnawave_raw_client
 from src.infrastructure.remnawave.user_cache import UserLookupCache
-from src.infrastructure.samovarbot.client import SamovarbotClient, create_samovarbot_client
 from src.infrastructure.telegram.setup import create_bot, create_dispatcher
+from src.infrastructure.zevsgate.client import ZevsgateClient, create_zevsgate_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ async def main() -> None:
     session_factory = create_session_factory(engine)
     sdk = create_remnawave_client(config)
     raw_client = create_remnawave_raw_client(config)
-    samovarbot_client = create_samovarbot_client(config)
+    zevsgate_client = create_zevsgate_client(config)
     bot = create_bot(config)
     dp: Dispatcher = create_dispatcher(config)
 
@@ -87,8 +87,8 @@ async def main() -> None:
             return raw_client
 
         @dishka_provide
-        async def get_samovarbot_client(self) -> SamovarbotClient:
-            return samovarbot_client
+        async def get_zevsgate_client(self) -> ZevsgateClient:
+            return zevsgate_client
 
         @dishka_provide
         async def get_config(self) -> Config:
@@ -181,7 +181,7 @@ async def main() -> None:
             bot,
             user_cache,
             asn_resolver,
-            samovarbot_client,
+            zevsgate_client,
         ),
     ]
     if isinstance(asn_resolver, MaxMindAsnResolver):

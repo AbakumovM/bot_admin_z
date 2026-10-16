@@ -83,6 +83,7 @@ def make_flagged(
     ru_node_threshold: int = 0,
     no_active_payment: bool | None = None,
     criteria_matched: int = 0,
+    remnawave_uuid: str | None = "11111111-2222-3333-4444-555555555555",
 ) -> FlaggedUser:
     return FlaggedUser(
         remnawave_id=remnawave_id,
@@ -99,6 +100,7 @@ def make_flagged(
         ru_node_threshold=ru_node_threshold,
         no_active_payment=no_active_payment,
         criteria_matched=criteria_matched,
+        remnawave_uuid=remnawave_uuid,
     )
 
 
@@ -584,16 +586,16 @@ def test_format_criteria_breakdown_marks_ru_not_exceeded_at_threshold() -> None:
 
 
 def test_make_digest_keyboard_adds_block_button_regardless_of_criteria_matched() -> None:
-    f = make_flagged(telegram_id=555, criteria_matched=1)
+    f = make_flagged(criteria_matched=1)
 
     keyboard = _make_digest_keyboard([f])
 
     callback_datas = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
-    assert "antifraud_block:1:555" in callback_datas
+    assert "antifraud_block:1:11111111-2222-3333-4444-555555555555" in callback_datas
 
 
-def test_make_digest_keyboard_omits_block_button_without_telegram_id() -> None:
-    f = make_flagged(telegram_id=None, criteria_matched=3)
+def test_make_digest_keyboard_omits_block_button_without_remnawave_uuid() -> None:
+    f = make_flagged(remnawave_uuid=None, criteria_matched=3)
 
     keyboard = _make_digest_keyboard([f])
 
@@ -603,8 +605,8 @@ def test_make_digest_keyboard_omits_block_button_without_telegram_id() -> None:
 def test_mark_blocked_in_keyboard_replaces_matching_button() -> None:
     keyboard = _make_digest_keyboard(
         [
-            make_flagged(remnawave_id=1, telegram_id=555),
-            make_flagged(remnawave_id=2, telegram_id=777),
+            make_flagged(remnawave_id=1, remnawave_uuid="uuid-1"),
+            make_flagged(remnawave_id=2, remnawave_uuid="uuid-2"),
         ]
     )
 
@@ -613,17 +615,17 @@ def test_mark_blocked_in_keyboard_replaces_matching_button() -> None:
     buttons = [btn for row in updated.inline_keyboard for btn in row]
     blocked_btn = next(b for b in buttons if b.callback_data == "antifraud_noop")
     assert blocked_btn.text == "✅ Заблокирован"
-    other_btn = next(b for b in buttons if b.callback_data == "antifraud_block:2:777")
+    other_btn = next(b for b in buttons if b.callback_data == "antifraud_block:2:uuid-2")
     assert other_btn.text == "🚫 Заблокировать"
 
 
 def test_mark_blocked_in_keyboard_no_match_leaves_keyboard_unchanged() -> None:
-    keyboard = _make_digest_keyboard([make_flagged(remnawave_id=1, telegram_id=555)])
+    keyboard = _make_digest_keyboard([make_flagged(remnawave_id=1, remnawave_uuid="uuid-1")])
 
     updated = _mark_blocked_in_keyboard(keyboard, remnawave_id=999)
 
     callback_datas = [btn.callback_data for row in updated.inline_keyboard for btn in row]
-    assert callback_datas == ["antifraud_block:1:555"]
+    assert callback_datas == ["antifraud_block:1:uuid-1"]
 
 
 # ---- auto-block digest ----
@@ -756,22 +758,22 @@ async def test_drop_connections_false_on_http_error() -> None:
 # ---- payment status resolution + hard candidate enrichment ----
 
 
-async def test_resolve_payment_bounded_maps_by_telegram_id() -> None:
+async def test_resolve_payment_bounded_maps_by_remnawave_uuid() -> None:
     client = MagicMock()
 
-    async def fake_check(client_arg, telegram_id):
-        return telegram_id == 111
+    async def fake_check(client_arg, remnawave_uuid):
+        return remnawave_uuid == "uuid-a"
 
     import src.apps.antifraud.controllers.scheduler.tasks as tasks_mod
 
     original = tasks_mod.check_no_active_payment
     tasks_mod.check_no_active_payment = fake_check
     try:
-        result = await _resolve_payment_bounded(client, [111, 222], concurrency=8)
+        result = await _resolve_payment_bounded(client, ["uuid-a", "uuid-b"], concurrency=8)
     finally:
         tasks_mod.check_no_active_payment = original
 
-    assert result == {111: True, 222: False}
+    assert result == {"uuid-a": True, "uuid-b": False}
 
 
 async def test_enrich_hard_computes_ru_and_payment_and_criteria_matched() -> None:
@@ -802,9 +804,9 @@ async def test_enrich_hard_computes_ru_and_payment_and_criteria_matched() -> Non
     assert enriched.criteria_matched == 3  # is_hard + ru + payment
 
 
-async def test_enrich_hard_skips_payment_check_without_telegram_id() -> None:
+async def test_enrich_hard_skips_payment_check_without_remnawave_uuid() -> None:
     config = make_config(antifraud_ru_node_prefixes=["RU"], antifraud_ru_node_ip_threshold=99)
-    flagged = make_flagged(remnawave_id=1, telegram_id=None)
+    flagged = make_flagged(remnawave_id=1, remnawave_uuid=None)
 
     result = await _enrich_hard_with_new_criteria([flagged], config, MagicMock())
 
@@ -827,3 +829,51 @@ async def test_enrich_hard_criteria_matched_excludes_unknown_payment() -> None:
 
     assert result[0].no_active_payment is None
     assert result[0].criteria_matched == 1  # неизвестный статус оплаты не засчитывается
+
+
+# ---- ZEVSgate: UUID панели и пользователи без telegram_id ----
+
+
+def test_resolve_and_filter_candidates_takes_remnawave_uuid_from_record() -> None:
+    user_index = {1: {"username": "web7", "uuid": "uuid-7", "hwidDeviceLimit": 1}}
+    hard, _ = _resolve_and_filter_candidates({1: _agg_ips(4)}, user_index, make_config())
+    assert hard[0].remnawave_uuid == "uuid-7"
+    assert hard[0].telegram_id is None
+
+
+def test_make_digest_keyboard_has_block_button_for_web_user_without_telegram_id() -> None:
+    f = make_flagged(remnawave_id=7, telegram_id=None, remnawave_uuid="uuid-7")
+
+    keyboard = _make_digest_keyboard([f])
+
+    callback_datas = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+    assert callback_datas == ["antifraud_block:7:uuid-7"]
+
+
+def test_digest_block_callback_data_fits_telegram_limit() -> None:
+    # Telegram ограничивает callback_data 64 байтами: префикс + id + UUID (36).
+    f = make_flagged(remnawave_id=9_999_999, remnawave_uuid="11111111-2222-3333-4444-555555555555")
+
+    keyboard = _make_digest_keyboard([f])
+
+    data = keyboard.inline_keyboard[0][0].callback_data
+    assert data is not None
+    assert len(data.encode()) <= 64
+
+
+def test_format_digest_omits_tg_for_web_user() -> None:
+    f = make_flagged(username="web7", telegram_id=None, criteria_matched=1)
+
+    digest = _format_digest([f], hard=True)
+
+    assert "web7" in digest
+    assert "tg:" not in digest
+    assert "None" not in digest
+
+
+def test_format_auto_block_digest_omits_tg_for_web_user() -> None:
+    f = make_flagged(username="web7", telegram_id=None, criteria_matched=3)
+
+    digest = _format_auto_block_digest([f])
+
+    assert "tg:None" not in digest

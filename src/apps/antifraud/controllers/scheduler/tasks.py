@@ -27,8 +27,8 @@ from src.apps.antifraud.domain.models import (
 from src.config import Config
 from src.infrastructure.geoip.asn import AsnResolver
 from src.infrastructure.remnawave.user_cache import UserLookupCache
-from src.infrastructure.samovarbot.client import (
-    SamovarbotClient,
+from src.infrastructure.zevsgate.client import (
+    ZevsgateClient,
     block_user,
     check_no_active_payment,
 )
@@ -383,6 +383,8 @@ def _resolve_and_filter_candidates(
         ips_sorted = tuple(sorted(ip_map.values(), key=lambda a: a.last_seen, reverse=True))
         username = str(record.get("username", f"id:{uid}"))
         telegram_id = record.get("telegramId")
+        raw_uuid = record.get("uuid")
+        remnawave_uuid = str(raw_uuid) if raw_uuid else None
 
         if group_count > hard_threshold:
             hard.append(
@@ -397,6 +399,7 @@ def _resolve_and_filter_candidates(
                     hwid_device_limit=device_limit,
                     threshold=hard_threshold,
                     is_hard=True,
+                    remnawave_uuid=remnawave_uuid,
                 )
             )
         elif config.antifraud_soft_alerts_enabled:
@@ -412,6 +415,7 @@ def _resolve_and_filter_candidates(
                     hwid_device_limit=device_limit,
                     threshold=hard_threshold,
                     is_hard=False,
+                    remnawave_uuid=remnawave_uuid,
                 )
             )
 
@@ -482,6 +486,11 @@ def _format_ip_line(ip: AggregatedIp) -> str:
     )
 
 
+def _format_tg_part(f: FlaggedUser) -> str:
+    """У веб-пользователей ZEVSgate telegram_id нет — тогда просто опускаем."""
+    return f" (tg:{f.telegram_id})" if f.telegram_id is not None else ""
+
+
 def _format_digest(flagged: list[FlaggedUser], *, hard: bool) -> str:
     if hard:
         header = (
@@ -505,15 +514,14 @@ def _format_digest(flagged: list[FlaggedUser], *, hard: bool) -> str:
         ip_lines = "\n".join(_format_ip_line(ip) for ip in examples)
         if len(f.ips) > _MAX_IPS_SHOWN_PER_USER:
             ip_lines += f"\n   +{len(f.ips) - _MAX_IPS_SHOWN_PER_USER} ещё"
-        tg_str = f"tg:{f.telegram_id}" if f.telegram_id is not None else "нет telegram_id"
         if hard:
             header_line = (
-                f"• <b>{html.escape(f.username)}</b> ({tg_str}) — "
+                f"• <b>{html.escape(f.username)}</b>{_format_tg_part(f)} — "
                 f"критериев: {f.criteria_matched}/3\n"
             )
             stats_part = _format_criteria_breakdown(f)
         else:
-            header_line = f"• <b>{html.escape(f.username)}</b> ({tg_str})\n"
+            header_line = f"• <b>{html.escape(f.username)}</b>{_format_tg_part(f)}\n"
             stats_part = f"  {_format_grouping_line(f)}"
         entry = f"{header_line}{stats_part}\n{ip_lines}\n"
         if used + len(entry) > budget:
@@ -532,13 +540,13 @@ def _format_auto_block_digest(blocked: list[FlaggedUser]) -> str:
     header = f"🚫 Antifraud: автоматически заблокировано пользователей: <b>{len(blocked)}</b>\n\n"
     lines = [header]
     for f in blocked:
-        tg_str = f"tg:{f.telegram_id}"
         examples = f.ips[:_MAX_IPS_SHOWN_PER_USER]
         ip_lines = "\n".join(_format_ip_line(ip) for ip in examples)
         if len(f.ips) > _MAX_IPS_SHOWN_PER_USER:
             ip_lines += f"\n   +{len(f.ips) - _MAX_IPS_SHOWN_PER_USER} ещё"
         lines.append(
-            f"• <b>{html.escape(f.username)}</b> ({tg_str}) — критериев: {f.criteria_matched}/3\n"
+            f"• <b>{html.escape(f.username)}</b>{_format_tg_part(f)} — "
+            f"критериев: {f.criteria_matched}/3\n"
             f"{_format_criteria_breakdown(f)}\n{ip_lines}\n"
         )
     return "".join(lines)
@@ -547,13 +555,13 @@ def _format_auto_block_digest(blocked: list[FlaggedUser]) -> str:
 def _make_digest_keyboard(flagged: list[FlaggedUser]) -> InlineKeyboardMarkup:
     rows = []
     for f in flagged[:_MAX_USERS_SHOWN]:
-        if f.telegram_id is None:
+        if f.remnawave_uuid is None:
             continue
         rows.append(
             [
                 InlineKeyboardButton(
                     text="🚫 Заблокировать",
-                    callback_data=f"antifraud_block:{f.remnawave_id}:{f.telegram_id}",
+                    callback_data=f"antifraud_block:{f.remnawave_id}:{f.remnawave_uuid}",
                 )
             ]
         )
@@ -625,29 +633,29 @@ async def _resolve_users_bounded(
 
 
 async def _resolve_payment_bounded(
-    client: SamovarbotClient, telegram_ids: list[int], concurrency: int
-) -> dict[int, bool | None]:
+    client: ZevsgateClient, remnawave_uuids: list[str], concurrency: int
+) -> dict[str, bool | None]:
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def _bounded(tg_id: int) -> tuple[int, bool | None]:
+    async def _bounded(uuid: str) -> tuple[str, bool | None]:
         async with semaphore:
-            return tg_id, await check_no_active_payment(client, tg_id)
+            return uuid, await check_no_active_payment(client, uuid)
 
-    resolved = await asyncio.gather(*(_bounded(tg_id) for tg_id in telegram_ids))
+    resolved = await asyncio.gather(*(_bounded(uuid) for uuid in remnawave_uuids))
     return dict(resolved)
 
 
 async def _enrich_hard_with_new_criteria(
     hard: list[FlaggedUser],
     config: Config,
-    samovarbot_client: SamovarbotClient,
+    zevsgate_client: ZevsgateClient,
 ) -> list[FlaggedUser]:
     """Добавляет критерии RU-нод и статуса оплаты уже-hard кандидатам.
 
     criteria_matched стартует с 1 (is_hard — это критерий 2, всегда true
     для любого из списка hard) и получает +1 за каждый дополнительный
     сработавший критерий. Критерий, который не удалось оценить (нет
-    telegram_id, samovarbot недоступен), даёт 0, никогда не завышая счёт
+    remnawave_uuid, бэкенд ZEVSgate недоступен), даёт 0, никогда не завышая счёт
     на недостающих данных.
     """
     ru_prefixes = {p.upper() for p in config.antifraud_ru_node_prefixes}
@@ -666,14 +674,14 @@ async def _enrich_hard_with_new_criteria(
             )
         )
 
-    payment_targets = [f.telegram_id for f in interim if f.telegram_id is not None]
-    payment_by_tg = await _resolve_payment_bounded(
-        samovarbot_client, payment_targets, config.antifraud_user_resolve_concurrency
+    payment_targets = [f.remnawave_uuid for f in interim if f.remnawave_uuid is not None]
+    payment_by_uuid = await _resolve_payment_bounded(
+        zevsgate_client, payment_targets, config.antifraud_user_resolve_concurrency
     )
 
     enriched: list[FlaggedUser] = []
     for f in interim:
-        no_payment = payment_by_tg.get(f.telegram_id) if f.telegram_id is not None else None
+        no_payment = payment_by_uuid.get(f.remnawave_uuid) if f.remnawave_uuid is not None else None
         enriched.append(
             dataclasses.replace(
                 f,
@@ -708,7 +716,7 @@ async def _run_antifraud_scan(
     bot: Bot,
     user_cache: UserLookupCache,
     asn_resolver: AsnResolver,
-    samovarbot_client: SamovarbotClient,
+    zevsgate_client: ZevsgateClient,
 ) -> int:
     """Run one full scan pass. Returns how many users were actually notified
     on the hard (action-eligible) track this run — used by both the
@@ -775,7 +783,7 @@ async def _run_antifraud_scan(
             )
 
             if hard:
-                hard = await _enrich_hard_with_new_criteria(hard, config, samovarbot_client)
+                hard = await _enrich_hard_with_new_criteria(hard, config, zevsgate_client)
                 accumulated_ids = await interactor.filter_by_violation_threshold(
                     remnawave_ids=[f.remnawave_id for f in hard],
                     now=now,
@@ -796,7 +804,7 @@ async def _run_antifraud_scan(
                             for f in to_notify
                             if f.criteria_matched == 3
                             and config.antifraud_auto_block_enabled
-                            and f.telegram_id is not None
+                            and f.remnawave_uuid is not None
                         }
                         auto_blocked: list[FlaggedUser] = []
                         manual: list[FlaggedUser] = []
@@ -804,17 +812,17 @@ async def _run_antifraud_scan(
                             if f.remnawave_id not in auto_block_ids:
                                 manual.append(f)
                                 continue
-                            assert f.telegram_id is not None
+                            assert f.remnawave_uuid is not None
                             reason = f"antifraud: auto-block, {f.criteria_matched}/3 критериев"
-                            blocked = await block_user(samovarbot_client, f.telegram_id, reason)
+                            blocked = await block_user(zevsgate_client, f.remnawave_uuid, reason)
                             if blocked:
                                 await _drop_connections(raw_client, f.remnawave_id)
                                 auto_blocked.append(f)
                             else:
                                 logger.error(
-                                    "Antifraud: auto-block failed for tg:%d, "
+                                    "Antifraud: auto-block failed for %s, "
                                     "falling back to manual alert",
-                                    f.telegram_id,
+                                    f.remnawave_uuid,
                                 )
                                 manual.append(f)
 
@@ -885,7 +893,7 @@ async def antifraud_scan_task(
     bot: Bot,
     user_cache: UserLookupCache,
     asn_resolver: AsnResolver,
-    samovarbot_client: SamovarbotClient,
+    zevsgate_client: ZevsgateClient,
 ) -> None:
     if not config.antifraud_enabled:
         logger.info("Antifraud scan disabled (antifraud_enabled=false), task exiting")
@@ -905,7 +913,7 @@ async def antifraud_scan_task(
                 bot,
                 user_cache,
                 asn_resolver,
-                samovarbot_client,
+                zevsgate_client,
             )
         except Exception as e:
             logger.error("Antifraud scan error: %s", e)

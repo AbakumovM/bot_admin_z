@@ -1,8 +1,12 @@
-# CLAUDE.md — Remnawave Admin Bot
+# CLAUDE.md — Remnawave Admin Bot (ZEVSgate)
 
 ## Что это
 
-Telegram-бот для мониторинга VPN-нод в Remnawave-панели.
+Telegram-бот для мониторинга VPN-нод в Remnawave-панели ZEVSgate.
+
+Форк `samovar_admin_bot` (remote `samovar`), отличается только интеграцией антифрода с
+бэкендом ZEVSgate (`~/Desktop/vpn`). Общие фиксы (ноды, биллинг, отчёты) переносить
+между репозиториями через `git cherry-pick` из remote `samovar`.
 Два администратора (Telegram ID в `ADMIN_IDS`), права одинаковые.
 
 ## Стек
@@ -143,11 +147,14 @@ ANTIFRAUD_IP_SLACK_MULTIPLIER)` — «жёсткий» (действие), вы�
 (`hard`) кандидатов дополнительно считаются ещё два критерия и суммируются в
 `criteria_matched` (стартует с 1 за базовый критерий, +1 за каждый следующий):
 (2) обнаружена концентрация подключений на RU-нодах выше `ANTIFRAUD_RU_NODE_IP_THRESHOLD`;
-(3) отсутствует активная оплата в системе samovarbot (проверяется через
-`GET /internal/users/{telegram_id}/payment-status`). В дайджесте каждого `hard`-алерта
-есть кнопка «🚫 Заблокировать» (требует известного `telegram_id` пользователя — без него
-кнопки нет вообще, звонить не по чему) — вызывает `POST /internal/users/{telegram_id}/block`
-на samovarbot (бан аккаунта + best-effort деактивация в Remnawave) и следом
+(3) отсутствует активная оплата в бэкенде ZEVSgate (проверяется через
+`GET /api/internal/users/by-remnawave/{uuid}/payment-status`). Пользователь адресуется по
+UUID панели (поле `uuid` из `GET /users/{id}`), а не по `telegram_id` — у веб-пользователей
+ZEVSgate (`web{id}`, регистрация по email) Telegram нет. В дайджесте каждого `hard`-алерта
+есть кнопка «🚫 Заблокировать» (требует известного UUID; callback
+`antifraud_block:{remnawave_id}:{uuid}`) — вызывает
+`POST /api/internal/users/by-remnawave/{uuid}/block` на бэкенде ZEVSgate (отключение в
+панели + `users.is_blocked`, повторная оплата невозможна; идемпотентно) и следом
 `POST /connections/drop` на панели для гарантированного разрыва активных сессий.
 Отдельной кнопки «Отключить» (кик без бана) больше нет — раньше она была везде, но её
 убрали как малополезную (фрод просто переподключался через секунды), решение о судьбе
@@ -210,8 +217,8 @@ ANTIFRAUD_MAXMIND_UPDATE_INTERVAL_HOURS=168  # Интервал автообно
 ANTIFRAUD_AUTO_BLOCK_ENABLED=false         # Авто-блок при 3/3 критериях, по умолчанию: false
 ANTIFRAUD_RU_NODE_PREFIXES=["RU"]          # Префиксы имён нод, считающихся RU для критерия концентрации
 ANTIFRAUD_RU_NODE_IP_THRESHOLD=2           # Порог IP именно на RU-нодах (не зависит от hwidDeviceLimit)
-SAMOVARBOT_BASE_URL=                        # Базовый URL сервиса подписок (samovarbot)
-SAMOVARBOT_INTERNAL_API_KEY=                # Ключ для internal API samovarbot (X-Internal-Api-Key)
+ZEVSGATE_BASE_URL=                          # Базовый URL бэкенда ZEVSgate (напр. https://zevsgate.com)
+ZEVSGATE_INTERNAL_API_KEY=                  # = INTERNAL_API__API_KEY на стороне vpn (X-Internal-Api-Key)
 ```
 
 **Важно**: `ADMIN_IDS` должен быть в JSON-формате `[id1,id2]`.

@@ -16,7 +16,7 @@ from src.apps.antifraud.controllers.scheduler.tasks import (
 from src.config import Config
 from src.infrastructure.geoip.asn import AsnResolver
 from src.infrastructure.remnawave.user_cache import UserLookupCache
-from src.infrastructure.samovarbot.client import SamovarbotClient, block_user
+from src.infrastructure.zevsgate.client import ZevsgateClient, block_user
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ async def cmd_antifraud_check(
     raw_client: FromDishka[httpx.AsyncClient],
     user_cache: FromDishka[UserLookupCache],
     asn_resolver: FromDishka[AsnResolver],
-    samovarbot_client: FromDishka[SamovarbotClient],
+    zevsgate_client: FromDishka[ZevsgateClient],
 ) -> None:
     status = await message.answer(
         "⏳ Запускаю проверку антифрода (опрос всех нод, может занять пару минут)…"
@@ -48,7 +48,7 @@ async def cmd_antifraud_check(
             bot,
             user_cache,
             asn_resolver,
-            samovarbot_client,
+            zevsgate_client,
         )
     except Exception as e:
         logger.error("Manual antifraud check failed: %s", e)
@@ -71,14 +71,14 @@ async def callback_noop(callback: CallbackQuery) -> None:
 async def callback_block_user(
     callback: CallbackQuery,
     raw_client: FromDishka[httpx.AsyncClient],
-    samovarbot_client: FromDishka[SamovarbotClient],
+    zevsgate_client: FromDishka[ZevsgateClient],
 ) -> None:
     parts = (callback.data or "").split(":")
     remnawave_id = int(parts[1])
-    telegram_id = int(parts[2])
+    remnawave_uuid = parts[2]
     reason = f"antifraud: manual block (remnawave_id={remnawave_id})"
 
-    blocked = await block_user(samovarbot_client, telegram_id, reason)
+    blocked = await block_user(zevsgate_client, remnawave_uuid, reason)
     if not blocked:
         await callback.answer("⚠️ Не удалось заблокировать", show_alert=True)
         return

@@ -70,21 +70,23 @@ async def test_cmd_antifraud_check_reports_error() -> None:
 
 
 async def test_callback_block_user_success() -> None:
-    callback = _make_callback("antifraud_block:42:555")
+    callback = _make_callback("antifraud_block:42:11111111-2222-3333-4444-555555555555")
     raw_client = MagicMock()
     drop_response = MagicMock()
     drop_response.raise_for_status = MagicMock()
     raw_client.post = AsyncMock(return_value=drop_response)
-    samovarbot_client = MagicMock()
+    zevsgate_client = MagicMock()
 
     with patch(
         "src.apps.antifraud.controllers.telegram.handlers.block_user",
         AsyncMock(return_value=True),
     ) as block_mock:
-        await _callback_block_user(callback, raw_client, samovarbot_client)
+        await _callback_block_user(callback, raw_client, zevsgate_client)
 
     block_mock.assert_awaited_once_with(
-        samovarbot_client, 555, "antifraud: manual block (remnawave_id=42)"
+        zevsgate_client,
+        "11111111-2222-3333-4444-555555555555",
+        "antifraud: manual block (remnawave_id=42)",
     )
     raw_client.post.assert_awaited_once()  # _drop_connections был вызван
     callback.answer.assert_awaited_once()
@@ -92,16 +94,16 @@ async def test_callback_block_user_success() -> None:
 
 
 async def test_callback_block_user_failure_does_not_drop_connections() -> None:
-    callback = _make_callback("antifraud_block:42:555")
+    callback = _make_callback("antifraud_block:42:11111111-2222-3333-4444-555555555555")
     raw_client = MagicMock()
     raw_client.post = AsyncMock()
-    samovarbot_client = MagicMock()
+    zevsgate_client = MagicMock()
 
     with patch(
         "src.apps.antifraud.controllers.telegram.handlers.block_user",
         AsyncMock(return_value=False),
     ):
-        await _callback_block_user(callback, raw_client, samovarbot_client)
+        await _callback_block_user(callback, raw_client, zevsgate_client)
 
     raw_client.post.assert_not_awaited()
     callback.answer.assert_awaited_once()
@@ -109,20 +111,20 @@ async def test_callback_block_user_failure_does_not_drop_connections() -> None:
     assert "не удалось" in callback.answer.await_args.args[0].lower()
 
 
-async def test_callback_block_user_parses_remnawave_and_telegram_ids() -> None:
-    callback = _make_callback("antifraud_block:42:555")
+async def test_callback_block_user_parses_remnawave_id_and_uuid() -> None:
+    callback = _make_callback("antifraud_block:42:11111111-2222-3333-4444-555555555555")
     raw_client = MagicMock()
     raw_client.post = AsyncMock(return_value=MagicMock(raise_for_status=MagicMock()))
-    samovarbot_client = MagicMock()
+    zevsgate_client = MagicMock()
 
     with patch(
         "src.apps.antifraud.controllers.telegram.handlers.block_user",
         AsyncMock(return_value=True),
     ) as block_mock:
-        await _callback_block_user(callback, raw_client, samovarbot_client)
+        await _callback_block_user(callback, raw_client, zevsgate_client)
 
-    # block_user вызывается с telegram_id (555), не с remnawave_id (42)
-    assert block_mock.await_args.args[1] == 555
+    # block_user вызывается с UUID панели, не с числовым remnawave_id (42)
+    assert block_mock.await_args.args[1] == "11111111-2222-3333-4444-555555555555"
     # _drop_connections (через raw_client.post) использует remnawave_id (42)
     raw_client.post.assert_awaited_once_with(
         "/connections/drop",
@@ -131,10 +133,15 @@ async def test_callback_block_user_parses_remnawave_and_telegram_ids() -> None:
 
 
 async def test_callback_block_user_updates_keyboard_on_success() -> None:
-    callback = _make_callback("antifraud_block:42:555")
+    callback = _make_callback("antifraud_block:42:11111111-2222-3333-4444-555555555555")
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚫 Заблокировать", callback_data="antifraud_block:42:555")]
+            [
+                InlineKeyboardButton(
+                    text="🚫 Заблокировать",
+                    callback_data="antifraud_block:42:11111111-2222-3333-4444-555555555555",
+                )
+            ]
         ]
     )
     message = MagicMock(spec=Message)
@@ -143,13 +150,13 @@ async def test_callback_block_user_updates_keyboard_on_success() -> None:
     callback.message = message
     raw_client = MagicMock()
     raw_client.post = AsyncMock(return_value=MagicMock(raise_for_status=MagicMock()))
-    samovarbot_client = MagicMock()
+    zevsgate_client = MagicMock()
 
     with patch(
         "src.apps.antifraud.controllers.telegram.handlers.block_user",
         AsyncMock(return_value=True),
     ):
-        await _callback_block_user(callback, raw_client, samovarbot_client)
+        await _callback_block_user(callback, raw_client, zevsgate_client)
 
     message.edit_reply_markup.assert_awaited_once()
     new_keyboard = message.edit_reply_markup.await_args.kwargs["reply_markup"]
@@ -159,20 +166,20 @@ async def test_callback_block_user_updates_keyboard_on_success() -> None:
 
 
 async def test_callback_block_user_keyboard_update_failure_still_confirms() -> None:
-    callback = _make_callback("antifraud_block:42:555")
+    callback = _make_callback("antifraud_block:42:11111111-2222-3333-4444-555555555555")
     message = MagicMock(spec=Message)
     message.reply_markup = InlineKeyboardMarkup(inline_keyboard=[[]])
     message.edit_reply_markup = AsyncMock(side_effect=RuntimeError("message too old"))
     callback.message = message
     raw_client = MagicMock()
     raw_client.post = AsyncMock(return_value=MagicMock(raise_for_status=MagicMock()))
-    samovarbot_client = MagicMock()
+    zevsgate_client = MagicMock()
 
     with patch(
         "src.apps.antifraud.controllers.telegram.handlers.block_user",
         AsyncMock(return_value=True),
     ):
-        await _callback_block_user(callback, raw_client, samovarbot_client)
+        await _callback_block_user(callback, raw_client, zevsgate_client)
 
     callback.answer.assert_awaited_once()
     assert "заблокирован" in callback.answer.await_args.args[0]
