@@ -51,6 +51,3 @@ class FlaggedUser:
     ru_node_threshold: int = 0
     no_active_payment: bool | None = None
     criteria_matched: int = 0
-    # UUID пользователя в панели — ключ для internal API ZEVSgate (проверка
-    # оплаты, блокировка). telegram_id есть не у всех: веб-пользователи без него.
-    remnawave_uuid: str | None = None

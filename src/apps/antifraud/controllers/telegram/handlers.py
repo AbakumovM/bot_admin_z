@@ -73,12 +73,12 @@ async def callback_block_user(
     raw_client: FromDishka[httpx.AsyncClient],
     zevsgate_client: FromDishka[ZevsgateClient],
 ) -> None:
+    # antifraud_block:{id}; у старых дайджестов ещё :{uuid} в конце — не нужен.
     parts = (callback.data or "").split(":")
     remnawave_id = int(parts[1])
-    remnawave_uuid = parts[2]
     reason = f"antifraud: manual block (remnawave_id={remnawave_id})"
 
-    blocked = await block_user(zevsgate_client, remnawave_uuid, reason)
+    blocked = await block_user(zevsgate_client, remnawave_id, reason)
     if not blocked:
         await callback.answer("⚠️ Не удалось заблокировать", show_alert=True)
         return

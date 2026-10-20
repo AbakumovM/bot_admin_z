@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from src.apps.antifraud.controllers.scheduler.tasks import (
     TELEGRAM_MESSAGE_LIMIT,
     _aggregate_ips_by_user,
@@ -83,7 +85,6 @@ def make_flagged(
     ru_node_threshold: int = 0,
     no_active_payment: bool | None = None,
     criteria_matched: int = 0,
-    remnawave_uuid: str | None = "11111111-2222-3333-4444-555555555555",
 ) -> FlaggedUser:
     return FlaggedUser(
         remnawave_id=remnawave_id,
@@ -100,7 +101,6 @@ def make_flagged(
         ru_node_threshold=ru_node_threshold,
         no_active_payment=no_active_payment,
         criteria_matched=criteria_matched,
-        remnawave_uuid=remnawave_uuid,
     )
 
 
@@ -591,22 +591,22 @@ def test_make_digest_keyboard_adds_block_button_regardless_of_criteria_matched()
     keyboard = _make_digest_keyboard([f])
 
     callback_datas = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
-    assert "antifraud_block:1:11111111-2222-3333-4444-555555555555" in callback_datas
+    assert "antifraud_block:1" in callback_datas
 
 
-def test_make_digest_keyboard_omits_block_button_without_remnawave_uuid() -> None:
-    f = make_flagged(remnawave_uuid=None, criteria_matched=3)
+def test_make_digest_keyboard_button_for_every_flagged_user() -> None:
+    """Remnawave 3.x: id есть у каждого пользователя — кнопка есть у всех."""
+    keyboard = _make_digest_keyboard([make_flagged(remnawave_id=1), make_flagged(remnawave_id=2)])
 
-    keyboard = _make_digest_keyboard([f])
-
-    assert keyboard.inline_keyboard == []
+    callback_datas = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+    assert callback_datas == ["antifraud_block:1", "antifraud_block:2"]
 
 
 def test_mark_blocked_in_keyboard_replaces_matching_button() -> None:
     keyboard = _make_digest_keyboard(
         [
-            make_flagged(remnawave_id=1, remnawave_uuid="uuid-1"),
-            make_flagged(remnawave_id=2, remnawave_uuid="uuid-2"),
+            make_flagged(remnawave_id=1),
+            make_flagged(remnawave_id=2),
         ]
     )
 
@@ -615,17 +615,33 @@ def test_mark_blocked_in_keyboard_replaces_matching_button() -> None:
     buttons = [btn for row in updated.inline_keyboard for btn in row]
     blocked_btn = next(b for b in buttons if b.callback_data == "antifraud_noop")
     assert blocked_btn.text == "✅ Заблокирован"
-    other_btn = next(b for b in buttons if b.callback_data == "antifraud_block:2:uuid-2")
+    other_btn = next(b for b in buttons if b.callback_data == "antifraud_block:2")
     assert other_btn.text == "🚫 Заблокировать"
 
 
 def test_mark_blocked_in_keyboard_no_match_leaves_keyboard_unchanged() -> None:
-    keyboard = _make_digest_keyboard([make_flagged(remnawave_id=1, remnawave_uuid="uuid-1")])
+    keyboard = _make_digest_keyboard([make_flagged(remnawave_id=1)])
 
     updated = _mark_blocked_in_keyboard(keyboard, remnawave_id=999)
 
     callback_datas = [btn.callback_data for row in updated.inline_keyboard for btn in row]
-    assert callback_datas == ["antifraud_block:1:uuid-1"]
+    assert callback_datas == ["antifraud_block:1"]
+
+
+def test_mark_blocked_in_keyboard_matches_legacy_uuid_button_exactly() -> None:
+    """Старые кнопки antifraud_block:{id}:{uuid} тоже помечаются, и id=1 не
+    задевает кнопку id=12 (сравнение по целому id, не по префиксу строки)."""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚫", callback_data="antifraud_block:1:uuid-1")],
+            [InlineKeyboardButton(text="🚫", callback_data="antifraud_block:12")],
+        ]
+    )
+
+    updated = _mark_blocked_in_keyboard(keyboard, remnawave_id=1)
+
+    callback_datas = [btn.callback_data for row in updated.inline_keyboard for btn in row]
+    assert callback_datas == ["antifraud_noop", "antifraud_block:12"]
 
 
 # ---- auto-block digest ----
@@ -758,22 +774,22 @@ async def test_drop_connections_false_on_http_error() -> None:
 # ---- payment status resolution + hard candidate enrichment ----
 
 
-async def test_resolve_payment_bounded_maps_by_remnawave_uuid() -> None:
+async def test_resolve_payment_bounded_maps_by_remnawave_id() -> None:
     client = MagicMock()
 
-    async def fake_check(client_arg, remnawave_uuid):
-        return remnawave_uuid == "uuid-a"
+    async def fake_check(client_arg, remnawave_id):
+        return remnawave_id == 1
 
     import src.apps.antifraud.controllers.scheduler.tasks as tasks_mod
 
     original = tasks_mod.check_no_active_payment
     tasks_mod.check_no_active_payment = fake_check
     try:
-        result = await _resolve_payment_bounded(client, ["uuid-a", "uuid-b"], concurrency=8)
+        result = await _resolve_payment_bounded(client, [1, 2], concurrency=8)
     finally:
         tasks_mod.check_no_active_payment = original
 
-    assert result == {"uuid-a": True, "uuid-b": False}
+    assert result == {1: True, 2: False}
 
 
 async def test_enrich_hard_computes_ru_and_payment_and_criteria_matched() -> None:
@@ -804,14 +820,22 @@ async def test_enrich_hard_computes_ru_and_payment_and_criteria_matched() -> Non
     assert enriched.criteria_matched == 3  # is_hard + ru + payment
 
 
-async def test_enrich_hard_skips_payment_check_without_remnawave_uuid() -> None:
+async def test_enrich_hard_checks_payment_by_remnawave_id() -> None:
     config = make_config(antifraud_ru_node_prefixes=["RU"], antifraud_ru_node_ip_threshold=99)
-    flagged = make_flagged(remnawave_id=1, remnawave_uuid=None)
+    flagged = make_flagged(remnawave_id=77)
 
-    result = await _enrich_hard_with_new_criteria([flagged], config, MagicMock())
+    import src.apps.antifraud.controllers.scheduler.tasks as tasks_mod
 
-    assert result[0].no_active_payment is None
-    assert result[0].criteria_matched == 1  # только is_hard, ru ниже порога, оплата не проверялась
+    check = AsyncMock(return_value=True)
+    original = tasks_mod.check_no_active_payment
+    tasks_mod.check_no_active_payment = check
+    try:
+        result = await _enrich_hard_with_new_criteria([flagged], config, MagicMock())
+    finally:
+        tasks_mod.check_no_active_payment = original
+
+    assert check.await_args.args[1] == 77
+    assert result[0].no_active_payment is True
 
 
 async def test_enrich_hard_criteria_matched_excludes_unknown_payment() -> None:
@@ -831,28 +855,29 @@ async def test_enrich_hard_criteria_matched_excludes_unknown_payment() -> None:
     assert result[0].criteria_matched == 1  # неизвестный статус оплаты не засчитывается
 
 
-# ---- ZEVSgate: UUID панели и пользователи без telegram_id ----
+# ---- ZEVSgate: числовой id панели и пользователи без telegram_id ----
 
 
-def test_resolve_and_filter_candidates_takes_remnawave_uuid_from_record() -> None:
-    user_index = {1: {"username": "web7", "uuid": "uuid-7", "hwidDeviceLimit": 1}}
+def test_resolve_and_filter_candidates_web_user_without_telegram_id() -> None:
+    # Ответ /users/{id} в Remnawave 3.x: uuid нет, ключ для ZEVSgate — id.
+    user_index = {1: {"username": "web7", "hwidDeviceLimit": 1}}
     hard, _ = _resolve_and_filter_candidates({1: _agg_ips(4)}, user_index, make_config())
-    assert hard[0].remnawave_uuid == "uuid-7"
+    assert hard[0].remnawave_id == 1
     assert hard[0].telegram_id is None
 
 
 def test_make_digest_keyboard_has_block_button_for_web_user_without_telegram_id() -> None:
-    f = make_flagged(remnawave_id=7, telegram_id=None, remnawave_uuid="uuid-7")
+    f = make_flagged(remnawave_id=7, telegram_id=None)
 
     keyboard = _make_digest_keyboard([f])
 
     callback_datas = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
-    assert callback_datas == ["antifraud_block:7:uuid-7"]
+    assert callback_datas == ["antifraud_block:7"]
 
 
 def test_digest_block_callback_data_fits_telegram_limit() -> None:
-    # Telegram ограничивает callback_data 64 байтами: префикс + id + UUID (36).
-    f = make_flagged(remnawave_id=9_999_999, remnawave_uuid="11111111-2222-3333-4444-555555555555")
+    # Telegram ограничивает callback_data 64 байтами.
+    f = make_flagged(remnawave_id=9_999_999_999)
 
     keyboard = _make_digest_keyboard([f])
 

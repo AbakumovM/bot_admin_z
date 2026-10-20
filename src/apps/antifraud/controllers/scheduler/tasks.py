@@ -383,8 +383,6 @@ def _resolve_and_filter_candidates(
         ips_sorted = tuple(sorted(ip_map.values(), key=lambda a: a.last_seen, reverse=True))
         username = str(record.get("username", f"id:{uid}"))
         telegram_id = record.get("telegramId")
-        raw_uuid = record.get("uuid")
-        remnawave_uuid = str(raw_uuid) if raw_uuid else None
 
         if group_count > hard_threshold:
             hard.append(
@@ -399,7 +397,6 @@ def _resolve_and_filter_candidates(
                     hwid_device_limit=device_limit,
                     threshold=hard_threshold,
                     is_hard=True,
-                    remnawave_uuid=remnawave_uuid,
                 )
             )
         elif config.antifraud_soft_alerts_enabled:
@@ -415,7 +412,6 @@ def _resolve_and_filter_candidates(
                     hwid_device_limit=device_limit,
                     threshold=hard_threshold,
                     is_hard=False,
-                    remnawave_uuid=remnawave_uuid,
                 )
             )
 
@@ -555,17 +551,27 @@ def _format_auto_block_digest(blocked: list[FlaggedUser]) -> str:
 def _make_digest_keyboard(flagged: list[FlaggedUser]) -> InlineKeyboardMarkup:
     rows = []
     for f in flagged[:_MAX_USERS_SHOWN]:
-        if f.remnawave_uuid is None:
-            continue
         rows.append(
             [
                 InlineKeyboardButton(
                     text="🚫 Заблокировать",
-                    callback_data=f"antifraud_block:{f.remnawave_id}:{f.remnawave_uuid}",
+                    callback_data=f"antifraud_block:{f.remnawave_id}",
                 )
             ]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _block_callback_remnawave_id(callback_data: str | None) -> int | None:
+    """id пользователя из callback_data кнопки блокировки.
+
+    Формат antifraud_block:{remnawave_id}; в дайджестах, отправленных до
+    перехода на Remnawave 3.x, — antifraud_block:{remnawave_id}:{uuid}.
+    """
+    parts = (callback_data or "").split(":")
+    if len(parts) < 2 or parts[0] != "antifraud_block" or not parts[1].isdigit():
+        return None
+    return int(parts[1])
 
 
 def _mark_blocked_in_keyboard(
@@ -583,7 +589,7 @@ def _mark_blocked_in_keyboard(
     for row in keyboard.inline_keyboard:
         new_row = []
         for button in row:
-            if (button.callback_data or "").startswith(f"antifraud_block:{remnawave_id}:"):
+            if _block_callback_remnawave_id(button.callback_data) == remnawave_id:
                 new_row.append(
                     InlineKeyboardButton(text="✅ Заблокирован", callback_data="antifraud_noop")
                 )
@@ -633,15 +639,15 @@ async def _resolve_users_bounded(
 
 
 async def _resolve_payment_bounded(
-    client: ZevsgateClient, remnawave_uuids: list[str], concurrency: int
-) -> dict[str, bool | None]:
+    client: ZevsgateClient, remnawave_ids: list[int], concurrency: int
+) -> dict[int, bool | None]:
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def _bounded(uuid: str) -> tuple[str, bool | None]:
+    async def _bounded(remnawave_id: int) -> tuple[int, bool | None]:
         async with semaphore:
-            return uuid, await check_no_active_payment(client, uuid)
+            return remnawave_id, await check_no_active_payment(client, remnawave_id)
 
-    resolved = await asyncio.gather(*(_bounded(uuid) for uuid in remnawave_uuids))
+    resolved = await asyncio.gather(*(_bounded(rid) for rid in remnawave_ids))
     return dict(resolved)
 
 
@@ -654,8 +660,8 @@ async def _enrich_hard_with_new_criteria(
 
     criteria_matched стартует с 1 (is_hard — это критерий 2, всегда true
     для любого из списка hard) и получает +1 за каждый дополнительный
-    сработавший критерий. Критерий, который не удалось оценить (нет
-    remnawave_uuid, бэкенд ZEVSgate недоступен), даёт 0, никогда не завышая счёт
+    сработавший критерий. Критерий, который не удалось оценить (бэкенд
+    ZEVSgate недоступен или ответил ошибкой), даёт 0, никогда не завышая счёт
     на недостающих данных.
     """
     ru_prefixes = {p.upper() for p in config.antifraud_ru_node_prefixes}
@@ -674,14 +680,15 @@ async def _enrich_hard_with_new_criteria(
             )
         )
 
-    payment_targets = [f.remnawave_uuid for f in interim if f.remnawave_uuid is not None]
-    payment_by_uuid = await _resolve_payment_bounded(
-        zevsgate_client, payment_targets, config.antifraud_user_resolve_concurrency
+    payment_by_id = await _resolve_payment_bounded(
+        zevsgate_client,
+        [f.remnawave_id for f in interim],
+        config.antifraud_user_resolve_concurrency,
     )
 
     enriched: list[FlaggedUser] = []
     for f in interim:
-        no_payment = payment_by_uuid.get(f.remnawave_uuid) if f.remnawave_uuid is not None else None
+        no_payment = payment_by_id.get(f.remnawave_id)
         enriched.append(
             dataclasses.replace(
                 f,
@@ -802,9 +809,7 @@ async def _run_antifraud_scan(
                         auto_block_ids = {
                             f.remnawave_id
                             for f in to_notify
-                            if f.criteria_matched == 3
-                            and config.antifraud_auto_block_enabled
-                            and f.remnawave_uuid is not None
+                            if f.criteria_matched == 3 and config.antifraud_auto_block_enabled
                         }
                         auto_blocked: list[FlaggedUser] = []
                         manual: list[FlaggedUser] = []
@@ -812,9 +817,8 @@ async def _run_antifraud_scan(
                             if f.remnawave_id not in auto_block_ids:
                                 manual.append(f)
                                 continue
-                            assert f.remnawave_uuid is not None
                             reason = f"antifraud: auto-block, {f.criteria_matched}/3 критериев"
-                            blocked = await block_user(zevsgate_client, f.remnawave_uuid, reason)
+                            blocked = await block_user(zevsgate_client, f.remnawave_id, reason)
                             if blocked:
                                 await _drop_connections(raw_client, f.remnawave_id)
                                 auto_blocked.append(f)
@@ -822,7 +826,7 @@ async def _run_antifraud_scan(
                                 logger.error(
                                     "Antifraud: auto-block failed for %s, "
                                     "falling back to manual alert",
-                                    f.remnawave_uuid,
+                                    f.remnawave_id,
                                 )
                                 manual.append(f)
 

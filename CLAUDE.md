@@ -148,12 +148,12 @@ ANTIFRAUD_IP_SLACK_MULTIPLIER)` — «жёсткий» (действие), вы�
 `criteria_matched` (стартует с 1 за базовый критерий, +1 за каждый следующий):
 (2) обнаружена концентрация подключений на RU-нодах выше `ANTIFRAUD_RU_NODE_IP_THRESHOLD`;
 (3) отсутствует активная оплата в бэкенде ZEVSgate (проверяется через
-`GET /api/internal/users/by-remnawave/{uuid}/payment-status`). Пользователь адресуется по
-UUID панели (поле `uuid` из `GET /users/{id}`), а не по `telegram_id` — у веб-пользователей
-ZEVSgate (`web{id}`, регистрация по email) Telegram нет. В дайджесте каждого `hard`-алерта
-есть кнопка «🚫 Заблокировать» (требует известного UUID; callback
-`antifraud_block:{remnawave_id}:{uuid}`) — вызывает
-`POST /api/internal/users/by-remnawave/{uuid}/block` на бэкенде ZEVSgate (отключение в
+`GET /api/internal/users/by-remnawave-id/{id}/payment-status`). Пользователь адресуется по
+числовому id панели (в Remnawave 3.x у пользователя нет `uuid`), а не по `telegram_id` — у
+веб-пользователей ZEVSgate (`web{id}`, регистрация по email) Telegram нет. В дайджесте
+каждого `hard`-алерта есть кнопка «🚫 Заблокировать» (callback `antifraud_block:{id}`;
+кнопки старых дайджестов `antifraud_block:{id}:{uuid}` тоже обрабатываются) — вызывает
+`POST /api/internal/users/by-remnawave-id/{id}/block` на бэкенде ZEVSgate (отключение в
 панели + `users.is_blocked`, повторная оплата невозможна; идемпотентно) и следом
 `POST /connections/drop` на панели для гарантированного разрыва активных сессий.
 Отдельной кнопки «Отключить» (кик без бана) больше нет — раньше она была везде, но её

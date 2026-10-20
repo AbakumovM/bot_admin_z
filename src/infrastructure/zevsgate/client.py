@@ -19,11 +19,12 @@ def create_zevsgate_client(config: Config) -> ZevsgateClient:
     return ZevsgateClient(client)
 
 
-async def check_no_active_payment(client: ZevsgateClient, remnawave_uuid: str) -> bool | None:
+async def check_no_active_payment(client: ZevsgateClient, remnawave_id: int) -> bool | None:
     """Критерий: нет активной оплаченной подписки прямо сейчас.
 
-    Пользователь адресуется по UUID панели, а не по telegram_id — у
-    веб-пользователей ZEVSgate (регистрация по email) telegram_id нет.
+    Пользователь адресуется по числовому id панели (Remnawave 3.x — uuid у
+    пользователя больше нет), а не по telegram_id — у веб-пользователей
+    ZEVSgate (регистрация по email) telegram_id нет.
 
     Возвращает True, если подтверждено отсутствие, False, если у
     пользователя есть активная подписка, None, если проверку не удалось
@@ -33,15 +34,15 @@ async def check_no_active_payment(client: ZevsgateClient, remnawave_uuid: str) -
     """
     try:
         response = await client.get(
-            f"/api/internal/users/by-remnawave/{remnawave_uuid}/payment-status"
+            f"/api/internal/users/by-remnawave-id/{remnawave_id}/payment-status"
         )
     except httpx.HTTPError as e:
-        logger.warning("Antifraud: payment-status check failed for %s: %s", remnawave_uuid, e)
+        logger.warning("Antifraud: payment-status check failed for %s: %s", remnawave_id, e)
         return None
     if response.status_code != 200:
         logger.warning(
             "Antifraud: payment-status check for %s returned %d",
-            remnawave_uuid,
+            remnawave_id,
             response.status_code,
         )
         return None
@@ -50,27 +51,27 @@ async def check_no_active_payment(client: ZevsgateClient, remnawave_uuid: str) -
         has_active_subscription = payload["has_active_subscription"]
     except (ValueError, KeyError) as e:
         logger.warning(
-            "Antifraud: payment-status response for %s is malformed: %s", remnawave_uuid, e
+            "Antifraud: payment-status response for %s is malformed: %s", remnawave_id, e
         )
         return None
     return not bool(has_active_subscription)
 
 
-async def block_user(client: ZevsgateClient, remnawave_uuid: str, reason: str) -> bool:
+async def block_user(client: ZevsgateClient, remnawave_id: int, reason: str) -> bool:
     """Блокировка «везде»: бэкенд ZEVSgate отключает пользователя в панели и
     ставит users.is_blocked (повторная оплата невозможна). Идемпотентно —
     повторный вызов для уже заблокированного тоже отвечает 200.
     """
     try:
         response = await client.post(
-            f"/api/internal/users/by-remnawave/{remnawave_uuid}/block", json={"reason": reason}
+            f"/api/internal/users/by-remnawave-id/{remnawave_id}/block", json={"reason": reason}
         )
     except httpx.HTTPError as e:
-        logger.error("Antifraud: block request failed for %s: %s", remnawave_uuid, e)
+        logger.error("Antifraud: block request failed for %s: %s", remnawave_id, e)
         return False
     if response.status_code != 200:
         logger.error(
-            "Antifraud: block request for %s returned %d", remnawave_uuid, response.status_code
+            "Antifraud: block request for %s returned %d", remnawave_id, response.status_code
         )
         return False
     return True
