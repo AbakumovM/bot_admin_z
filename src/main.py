@@ -160,7 +160,6 @@ async def main() -> None:
                 command="user_traffic", description="Трафик пользователя: /user_traffic <имя>"
             ),
             BotCommand(command="billing", description="Предстоящие платежи нод"),
-            BotCommand(command="billing_history", description="История платежей"),
             BotCommand(command="antifraud_check", description="Разовая проверка антифрода"),
         ]
     )

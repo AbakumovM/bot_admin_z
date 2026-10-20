@@ -32,7 +32,9 @@ def make_node(
     )
 
 
-def make_incident(*, node_uuid: str = "node-1", escalated: bool = False) -> IncidentInfo:
+def make_incident(
+    *, node_uuid: str = "node-1", escalated: bool = False, restart_attempts: int = 0
+) -> IncidentInfo:
     return IncidentInfo(
         id=uuid4(),
         node_uuid=node_uuid,
@@ -40,7 +42,7 @@ def make_incident(*, node_uuid: str = "node-1", escalated: bool = False) -> Inci
         started_at=datetime.now(timezone.utc),
         resolved_at=None,
         last_status_message="connection timeout",
-        restart_attempts=0,
+        restart_attempts=restart_attempts,
         escalated=escalated,
         downtime_seconds=None,
     )
@@ -162,9 +164,10 @@ async def test_three_incidents_triggers_escalation(
     node = make_node(is_connected=False)
     node_view.get_all_nodes.return_value = [node]
     node_view.is_muted.return_value = False
-    incident = make_incident()
+    # Эскалация — когда в текущем инциденте исчерпаны попытки рестарта
+    # (escalation_max_attempts=3), а не по числу инцидентов за период.
+    incident = make_incident(restart_attempts=3)
     incident_view.get_open_incident.return_value = incident
-    incident_view.count_recent_incidents.return_value = 3  # >= 3 → escalate
     incident_interactor.escalate_incident.return_value = make_incident(escalated=True)
 
     await loop.poll()
