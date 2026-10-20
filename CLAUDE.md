@@ -141,13 +141,12 @@ ANTIFRAUD_IP_SLACK_MULTIPLIER)` — «жёсткий» (действие), вы�
 умолчанию выключено (`ANTIFRAUD_ENABLED=false`). По запросу —
 `/antifraud_check`.
 
-**Авто-блок по 3 критериям** — сама постановка в дайджест не меняется: пользователь
+**Авто-блок по 2 критериям** — сама постановка в дайджест не меняется: пользователь
 по-прежнему алертится по единственному исходному критерию (`is_hard` — превышен общий
 порог конкурентных IP, `hwidDeviceLimit` + `ANTIFRAUD_IP_SLACK`). Для уже отобранных
-(`hard`) кандидатов дополнительно считаются ещё два критерия и суммируются в
-`criteria_matched` (стартует с 1 за базовый критерий, +1 за каждый следующий):
-(2) обнаружена концентрация подключений на RU-нодах выше `ANTIFRAUD_RU_NODE_IP_THRESHOLD`;
-(3) отсутствует активная оплата в бэкенде ZEVSgate (проверяется через
+(`hard`) кандидатов дополнительно проверяется второй критерий, результат — в
+`criteria_matched` (стартует с 1 за базовый критерий, +1 за второй):
+(2) отсутствует активная оплата в бэкенде ZEVSgate (проверяется через
 `GET /api/internal/users/by-remnawave-id/{id}/payment-status`). Пользователь адресуется по
 числовому id панели (в Remnawave 3.x у пользователя нет `uuid`), а не по `telegram_id` — у
 веб-пользователей ZEVSgate (`web{id}`, регистрация по email) Telegram нет. В дайджесте
@@ -159,7 +158,7 @@ ANTIFRAUD_IP_SLACK_MULTIPLIER)` — «жёсткий» (действие), вы�
 Отдельной кнопки «Отключить» (кик без бана) больше нет — раньше она была везде, но её
 убрали как малополезную (фрод просто переподключался через секунды), решение о судьбе
 пользователя администратор теперь принимает сразу через блокировку. При
-`criteria_matched == 3` и включённом `ANTIFRAUD_AUTO_BLOCK_ENABLED=true` та же
+`criteria_matched == 2` и включённом `ANTIFRAUD_AUTO_BLOCK_ENABLED=true` та же
 блокировка выполняется автоматически без кнопки, уведомление приходит как батч-дайджест
 авто-блоков. По умолчанию авто-блок выключен (`ANTIFRAUD_AUTO_BLOCK_ENABLED=false`).
 
@@ -214,9 +213,7 @@ ANTIFRAUD_MAXMIND_ACCOUNT_ID=              # Аккаунт MaxMind, нужен 
 ANTIFRAUD_MAXMIND_LICENSE_KEY=             # Лицензионный ключ MaxMind (бесплатный)
 ANTIFRAUD_ASN_DATABASE_PATH=./geoip/GeoLite2-ASN.mmdb  # Путь к базе GeoLite2-ASN
 ANTIFRAUD_MAXMIND_UPDATE_INTERVAL_HOURS=168  # Интервал автообновления базы (недельный по умолчанию)
-ANTIFRAUD_AUTO_BLOCK_ENABLED=false         # Авто-блок при 3/3 критериях, по умолчанию: false
-ANTIFRAUD_RU_NODE_PREFIXES=["RU"]          # Префиксы имён нод, считающихся RU для критерия концентрации
-ANTIFRAUD_RU_NODE_IP_THRESHOLD=2           # Порог IP именно на RU-нодах (не зависит от hwidDeviceLimit)
+ANTIFRAUD_AUTO_BLOCK_ENABLED=false         # Авто-блок при 2/2 критериях, по умолчанию: false
 ZEVSGATE_BASE_URL=                          # Базовый URL бэкенда ZEVSgate (напр. https://zevsgate.com)
 ZEVSGATE_INTERNAL_API_KEY=                  # = INTERNAL_API__API_KEY на стороне vpn (X-Internal-Api-Key)
 ```
